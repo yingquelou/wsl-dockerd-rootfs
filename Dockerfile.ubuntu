@@ -1,0 +1,160 @@
+# ============================================================
+# Ubuntu 24.04 + systemd + Docker Engine
+# 由 compose.yaml 统一构建，所有可配置项通过 build.args 传入
+# ============================================================
+
+FROM ghcr.io/yingquelou/ubuntu:24.04.5
+
+# ============================================================
+# 可配置参数
+# ============================================================
+
+ARG TZ=Asia/Shanghai
+ARG LANG_CODE=zh_CN.UTF-8
+ARG EXTRA_LANG=en_US.UTF-8
+
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+
+ARG UBUNTU_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+ARG UBUNTU_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+ARG DOCKER_CE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu
+
+ARG USERNAME=dev
+ARG USER_UID=1000
+ARG USER_GID=1000
+ARG USER_PASSWORD=dev
+ARG ROOT_PASSWORD=wsl
+
+ARG DOCKER_TCP_HOST=127.0.0.1
+ARG DOCKER_TCP_PORT=2375
+ARG DOCKER_REGISTRY_MIRRORS="https://docker.1panel.live,https://hub.rat.dev"
+ARG DOCKER_LOG_MAX_SIZE=10m
+ARG DOCKER_LOG_MAX_FILE=3
+
+ARG WSL_DEFAULT_USER=dev
+ARG WSL_AUTOMOUNT_ENABLED=true
+ARG WSL_INTEROP_ENABLED=true
+
+# ============================================================
+# 构建逻辑
+# ============================================================
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=${TZ} \
+    LANG=${LANG_CODE} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    no_proxy=${NO_PROXY}
+
+# ---------- 替换 APT 源 ----------
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+        sed -i "s|http://security.ubuntu.com/ubuntu|${UBUNTU_SECURITY_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+        sed -i "s|https://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+        sed -i "s|https://security.ubuntu.com/ubuntu|${UBUNTU_SECURITY_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list; \
+        sed -i "s|http://security.ubuntu.com/ubuntu|${UBUNTU_SECURITY_MIRROR}|g" /etc/apt/sources.list; \
+    fi
+
+# ---------- 基础系统 ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg lsb-release apt-transport-https \
+        software-properties-common systemd systemd-sysv sudo \
+        vim nano wget git net-tools iproute2 iputils-ping dnsutils \
+        bash-completion locales tzdata \
+    && ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && echo ${TZ} > /etc/timezone \
+    && locale-gen ${LANG_CODE} ${EXTRA_LANG} \
+    && update-locale LANG=${LANG_CODE} \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- Docker CE ----------
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL ${DOCKER_CE_MIRROR}/gpg \
+       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+       ${DOCKER_CE_MIRROR} \
+       $(lsb_release -cs) stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-ce docker-ce-cli containerd.io \
+        docker-buildx-plugin docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- daemon.json ----------
+RUN mkdir -p /etc/docker \
+    && MIRRORS_JSON=$(echo "${DOCKER_REGISTRY_MIRRORS}" | awk -F',' '{ \
+         printf "["; \
+         for (i=1; i<=NF; i++) { \
+           gsub(/^[ \t]+|[ \t]+$/, "", $i); \
+           printf "\"%s\"", $i; \
+           if (i<NF) printf ","; \
+         } \
+         printf "]"; \
+       }') \
+    && cat > /etc/docker/daemon.json <<EOF
+{
+  "hosts": [
+    "unix:///var/run/docker.sock",
+    "tcp://${DOCKER_TCP_HOST}:${DOCKER_TCP_PORT}"
+  ],
+  "tls": false,
+  "registry-mirrors": ${MIRRORS_JSON},
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "${DOCKER_LOG_MAX_SIZE}",
+    "max-file": "${DOCKER_LOG_MAX_FILE}"
+  }
+}
+EOF
+
+# ---------- wsl.conf ----------
+RUN cat > /etc/wsl.conf <<EOF
+[boot]
+systemd=true
+
+[user]
+default=${WSL_DEFAULT_USER}
+
+[automount]
+enabled=${WSL_AUTOMOUNT_ENABLED}
+mountFsTab=true
+root=/mnt/
+options=metadata,uid=${USER_UID},gid=${USER_GID},umask=0022,fmask=111,case=off
+
+[network]
+generateResolvConf=true
+
+[interop]
+enabled=${WSL_INTEROP_ENABLED}
+appendWindowsPath=true
+EOF
+
+# ---------- 默认用户 ----------
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} \
+    && echo "${USERNAME}:${USER_PASSWORD}" | chpasswd \
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME} \
+    && usermod -aG docker ${USERNAME}
+
+RUN echo "root:${ROOT_PASSWORD}" | chpasswd \
+    && chsh -s /bin/bash root
+
+RUN systemctl enable docker.service containerd.service
+
+# ---------- 清空代理，避免污染 ----------
+ENV HTTP_PROXY= HTTPS_PROXY= NO_PROXY= \
+    http_proxy= https_proxy= no_proxy=
+
+CMD ["/bin/bash"]

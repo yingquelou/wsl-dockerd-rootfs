@@ -1,0 +1,56 @@
+name: wsl-docker-rootfs
+
+x-common-args: &common-args
+  TZ: Asia/Shanghai
+  USERNAME: dev
+  USER_UID: "1000"
+  USER_GID: "1000"
+  USER_PASSWORD: dev
+  ROOT_PASSWORD: wsl
+  DOCKER_TCP_HOST: 127.0.0.1
+  DOCKER_TCP_PORT: "2375"
+  DOCKER_REGISTRY_MIRRORS: "https://docker.1panel.live,https://hub.rat.dev"
+  DOCKER_LOG_MAX_SIZE: 10m
+  DOCKER_LOG_MAX_FILE: "3"
+  WSL_DEFAULT_USER: dev
+  WSL_AUTOMOUNT_ENABLED: "true"
+  WSL_INTEROP_ENABLED: "true"
+
+services:
+
+  ubuntu-rootfs:
+    build:
+      context: .
+      dockerfile: Dockerfile.ubuntu
+      args:
+        <<: *common-args
+        # 系统相关
+        LANG_CODE: zh_CN.UTF-8
+        EXTRA_LANG: en_US.UTF-8
+        # APT / Docker CE 源
+        UBUNTU_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+        UBUNTU_SECURITY_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+        DOCKER_CE_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu
+        # 构建时代理（按需取消注释）
+        # HTTP_PROXY: http://192.168.1.100:7890
+        # HTTPS_PROXY: http://192.168.1.100:7890
+    image: ghcr.io/yingquelou/wsl-dockerd-rootfs:ubuntu
+    container_name: wsl-rootfs-ubuntu
+    command: ["/bin/bash"]
+
+  alpine-rootfs:
+    build:
+      context: .
+      dockerfile: Dockerfile.alpine
+      args:
+        <<: *common-args
+        # Alpine 源
+        ALPINE_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/alpine
+        ALPINE_VERSION: v3.24
+        # 构建时代理（按需取消注释）
+        # HTTP_PROXY: http://192.168.1.100:7890
+        # HTTPS_PROXY: http://192.168.1.100:7890
+    image: ghcr.io/yingquelou/wsl-dockerd-rootfs:alpine
+    container_name: wsl-rootfs-alpine
+    command: ["/bin/sh"]
+  

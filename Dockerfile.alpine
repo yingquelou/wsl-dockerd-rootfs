@@ -1,0 +1,155 @@
+# ============================================================
+# Alpine + OpenRC + Docker Engine
+# 轻量，导入 WSL 后约 100MB 左右
+# ============================================================
+
+FROM ghcr.io/yingquelou/alpine:3.24.2
+
+# ============================================================
+# 可配置参数
+# ============================================================
+
+ARG TZ=Asia/Shanghai
+ARG ALPINE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/alpine
+ARG ALPINE_VERSION=v3.20
+
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+
+ARG USERNAME=dev
+ARG USER_UID=1000
+ARG USER_GID=1000
+ARG USER_PASSWORD=dev
+ARG ROOT_PASSWORD=wsl
+
+ARG DOCKER_TCP_HOST=127.0.0.1
+ARG DOCKER_TCP_PORT=2375
+ARG DOCKER_REGISTRY_MIRRORS="https://docker.1panel.live,https://hub.rat.dev"
+ARG DOCKER_LOG_MAX_SIZE=10m
+ARG DOCKER_LOG_MAX_FILE=3
+
+ARG WSL_DEFAULT_USER=dev
+ARG WSL_AUTOMOUNT_ENABLED=true
+ARG WSL_INTEROP_ENABLED=true
+
+# ============================================================
+# 构建逻辑
+# ============================================================
+
+ENV TZ=${TZ} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    no_proxy=${NO_PROXY}
+
+# ---------- 替换 APK 源（直接重写，避免解析原文件） ----------
+RUN printf '%s/%s/main\n%s/%s/community\n' \
+        "${ALPINE_MIRROR}" "${ALPINE_VERSION}" \
+        "${ALPINE_MIRROR}" "${ALPINE_VERSION}" \
+        > /etc/apk/repositories \
+    && cat /etc/apk/repositories
+
+# ---------- 基础系统 ----------
+RUN apk update && apk add --no-cache \
+        bash bash-completion \
+        curl ca-certificates openssl \
+        gnupg \
+        sudo \
+        tzdata \
+        vim nano wget git \
+        net-tools iproute2 bind-tools \
+        procps \
+        util-linux \
+        openrc \
+        rsyslog \
+    && cp /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && echo ${TZ} > /etc/timezone
+
+# ---------- Docker Engine + CLI + Compose ----------
+RUN apk add --no-cache \
+        docker \
+        docker-cli \
+        docker-cli-buildx \
+        docker-cli-compose \
+        containerd \
+        runc \
+        iptables \
+        ip6tables
+
+# ---------- daemon.json ----------
+RUN mkdir -p /etc/docker \
+    && MIRRORS_JSON=$(echo "${DOCKER_REGISTRY_MIRRORS}" | awk -F',' '{ \
+         printf "["; \
+         for (i=1; i<=NF; i++) { \
+           gsub(/^[ \t]+|[ \t]+$/, "", $i); \
+           printf "\"%s\"", $i; \
+           if (i<NF) printf ","; \
+         } \
+         printf "]"; \
+       }') \
+    && cat > /etc/docker/daemon.json <<EOF
+{
+  "hosts": [
+    "unix:///var/run/docker.sock",
+    "tcp://${DOCKER_TCP_HOST}:${DOCKER_TCP_PORT}"
+  ],
+  "tls": false,
+  "registry-mirrors": ${MIRRORS_JSON},
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "${DOCKER_LOG_MAX_SIZE}",
+    "max-file": "${DOCKER_LOG_MAX_FILE}"
+  }
+}
+EOF
+
+# ---------- wsl.conf ----------
+# Alpine 无 systemd，用 OpenRC；通过 boot.command 拉起默认 runlevel
+RUN cat > /etc/wsl.conf <<EOF
+[boot]
+command = /sbin/openrc default
+
+[user]
+default=${WSL_DEFAULT_USER}
+
+[automount]
+enabled=${WSL_AUTOMOUNT_ENABLED}
+mountFsTab=true
+root=/mnt/
+options=metadata,uid=${USER_UID},gid=${USER_GID},umask=0022,fmask=111,case=off
+
+[network]
+generateResolvConf=true
+
+[interop]
+enabled=${WSL_INTEROP_ENABLED}
+appendWindowsPath=true
+EOF
+
+# ---------- 默认用户 ----------
+RUN addgroup -g ${USER_GID} ${USERNAME} \
+    && adduser -u ${USER_UID} -G ${USERNAME} -s /bin/bash -D ${USERNAME} \
+    && echo "${USERNAME}:${USER_PASSWORD}" | chpasswd \
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME} \
+    && addgroup ${USERNAME} docker
+
+RUN echo "root:${ROOT_PASSWORD}" | chpasswd
+
+# ---------- 启用 OpenRC 服务 ----------
+# rc-update 在构建容器内可能因 /run 未挂载而报错，用 ln 兜底
+RUN mkdir -p /etc/runlevels/default /etc/runlevels/boot /etc/runlevels/sysinit \
+    && (rc-update add docker default || \
+        ln -sf /etc/init.d/docker /etc/runlevels/default/docker) \
+    && (rc-update add containerd default || \
+        ln -sf /etc/init.d/containerd /etc/runlevels/default/containerd) \
+    && ln -sf /etc/init.d/networking /etc/runlevels/boot/networking 2>/dev/null || true
+
+# ---------- 清空代理 ----------
+ENV HTTP_PROXY= HTTPS_PROXY= NO_PROXY= \
+    http_proxy= https_proxy= no_proxy=
+
+CMD ["/bin/sh"]
