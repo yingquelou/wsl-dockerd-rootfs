@@ -92,6 +92,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- daemon.json ----------
+# userland-proxy=true: WSL2 mirrored 模式下需 docker-proxy 接管 loopback0 流量
 RUN mkdir -p /etc/docker \
     && MIRRORS_JSON=$(echo "${DOCKER_REGISTRY_MIRRORS}" | awk -F',' '{ \
          printf "["; \
@@ -109,6 +110,7 @@ RUN mkdir -p /etc/docker \
     "tcp://${DOCKER_TCP_HOST}:${DOCKER_TCP_PORT}"
   ],
   "tls": false,
+  "userland-proxy": true,
   "registry-mirrors": ${MIRRORS_JSON},
   "log-driver": "json-file",
   "log-opts": {
@@ -140,6 +142,13 @@ enabled=${WSL_INTEROP_ENABLED}
 appendWindowsPath=true
 EOF
 
+# ---------- docker.service drop-in ----------
+# systemd 默认 ExecStart 带 -H fd://, 与 daemon.json 的 hosts 冲突
+# 用 drop-in 清空并重设 ExecStart, 让 dockerd 从 daemon.json 读取 hosts
+RUN mkdir -p /etc/systemd/system/docker.service.d \
+    && printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --containerd=/run/containerd/containerd.sock\n' \
+       > /etc/systemd/system/docker.service.d/override.conf
+
 # ---------- 默认用户 ----------
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} \
@@ -152,6 +161,13 @@ RUN echo "root:${ROOT_PASSWORD}" | chpasswd \
     && chsh -s /bin/bash root
 
 RUN systemctl enable docker.service containerd.service
+
+# ---------- WSL2 mirrored 模式 Docker 端口访问修复 ----------
+COPY overlay/ /
+RUN chmod +x /usr/local/sbin/wsl-docker-host-access.sh \
+    && mkdir -p /etc/systemd/system/multi-user.target.wants \
+    && ln -sf /etc/systemd/system/wsl-docker-host-access.service /etc/systemd/system/multi-user.target.wants/wsl-docker-host-access.service \
+    && printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-docker-forward.conf
 
 # ---------- 清空代理，避免污染 ----------
 ENV HTTP_PROXY= HTTPS_PROXY= NO_PROXY= \

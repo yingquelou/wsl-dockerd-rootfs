@@ -34,6 +34,8 @@ services:
         # 构建时代理（按需取消注释）
         # HTTP_PROXY: http://192.168.1.100:7890
         # HTTPS_PROXY: http://192.168.1.100:7890
+    labels:
+      - org.opencontainers.image.source=https://github.com/yingquelou/wsl-dockerd-rootfs
     image: ghcr.io/yingquelou/wsl-dockerd-rootfs:ubuntu
     container_name: wsl-rootfs-ubuntu
     command: ["/bin/bash"]
@@ -50,6 +52,8 @@ services:
         # 构建时代理（按需取消注释）
         # HTTP_PROXY: http://192.168.1.100:7890
         # HTTPS_PROXY: http://192.168.1.100:7890
+    labels:
+      - org.opencontainers.image.source=https://github.com/yingquelou/wsl-dockerd-rootfs
     image: ghcr.io/yingquelou/wsl-dockerd-rootfs:alpine
     container_name: wsl-rootfs-alpine
     command: ["/bin/sh"]

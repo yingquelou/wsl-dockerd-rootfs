@@ -1,0 +1,13 @@
+[Unit]
+Description=WSL2 mirrored-mode Docker host access rule watcher
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/wsl-docker-host-access.sh --watch
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

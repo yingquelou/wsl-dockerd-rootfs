@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# OpenRC 服务: 持续维护 WSL2 mirrored 模式下 Docker 端口访问规则
+# 依赖: docker
+
+description="WSL2 mirrored-mode Docker host access rule watcher"
+
+depend() {
+        after docker
+        need docker
+}
+
+start() {
+        ebegin "Starting wsl-docker-host-access watcher"
+        start-stop-daemon --start --background --exec /usr/local/sbin/wsl-docker-host-access.sh -- --watch
+        eend $?
+}
+
+stop() {
+        ebegin "Stopping wsl-docker-host-access watcher"
+        start-stop-daemon --stop --exec /usr/local/sbin/wsl-docker-host-access.sh
+        eend $?
+}

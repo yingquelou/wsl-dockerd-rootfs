@@ -536,3 +536,32 @@ Alpine 版没有 systemd，PID 1 是 WSL 的 `/init`，OpenRC 由 `wsl.conf` 的
 - **镜像加速地址**：默认给的 `docker.1panel.live` 和 `hub.rat.dev` 可能随时失效，建议替换为自己可用的地址，或直接改成公司内网 registry mirror。
 - **两份 rootfs 互不干扰**，可同时导入 WSL，各自独立运行 Docker 守护进程，使用不同的 TCP 端口即可（若需要同时跑两个，把其中一个的 `DOCKER_TCP_PORT` 改成 2376）。
 - **代理只在构建阶段生效**，导入后 WSL 环境干净，不会继承 `HTTP_PROXY`。
+
+---
+
+## 🔧 WSL2 mirrored 模式下 Docker 端口访问
+
+### 问题
+
+WSL2 `networkingMode=mirrored` 下, Windows `localhost` 流量经 `loopback0` 接口投递到 WSL。Docker 默认用 iptables DNAT 转发发布端口, 但经 `loopback0` 进来的 `127.0.0.0/8` 包被 DNAT 后回程路由异常, 导致 Windows 侧连接超时。
+
+### 内置修复
+
+rootfs 已内置以下修复, 无需手动操作:
+
+1. **`daemon.json` 启用 `userland-proxy: true`** — 让 `docker-proxy` 接管连接
+2. **`/usr/local/sbin/wsl-docker-host-access.sh`** — 在 iptables nat PREROUTING 顶部插入 RETURN 规则, 跳过 Docker DNAT, 改由 `docker-proxy` 处理
+3. **开机自启服务** — Alpine 用 OpenRC (`/etc/init.d/wsl-docker-host-access`), Ubuntu 用 systemd (`wsl-docker-host-access.service`), 以 `--watch` 模式持续维护规则
+4. **`net.ipv4.ip_forward=1`** — 通过 sysctl 持久化
+5. **Ubuntu docker.service drop-in** — 移除 systemd 默认的 `-H fd://` 避免与 `daemon.json` 的 `hosts` 冲突
+
+### IPv6 `::1` 限制 (无法在 rootfs 层修复)
+
+Windows `localhost` 优先解析为 IPv6 `::1`。WSL2 mirrored 模式将 `::1` 包经 `loopback0` 投递, 但 **Linux 内核 `ipv6_rcv()` 对非环回接口 (`loopback0` 无 `IFF_LOOPBACK` 标志) 上的 `::1` 包硬编码丢弃**, 在 netfilter 之前发生, 无法用 sysctl/iptables 绕过。
+
+**影响**:
+- `127.0.0.1:port` — ✅ 正常 (WSL2 设 `route_localnet=1`)
+- `localhost:port` (浏览器/curl) — ✅ 可用 (Happy Eyeballs: `::1` 失败后回退 `127.0.0.1`, 延迟约 0.2s)
+- `localhost:port` (无 Happy Eyeballs 的客户端, 如 .NET `Invoke-WebRequest`) — ❌ 超时
+
+**彻底解决方案** (Windows 侧操作): 编辑 `C:\Windows\System32\drivers\etc\hosts`, 将 `127.0.0.1 localhost` 置于 `::1 localhost` 之前, 使 Windows 优先使用 IPv4。
